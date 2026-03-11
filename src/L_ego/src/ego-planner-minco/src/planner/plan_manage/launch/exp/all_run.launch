@@ -1,0 +1,6 @@
+<launch>
+  <include file="$(find l_ctrl)/launch/run_ctrl.launch" />
+  <!-- <include file="$(find ego_planner)/launch/exp/run_in_exp.launch" /> -->
+  <include file="$(find multipoint)/launch/multipointplan_exp.launch" />
+  <!-- <include file="$(find ego_planner)/launch/exp/exp_rviz.launch" /> -->
+</launch>

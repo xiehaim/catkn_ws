@@ -1,0 +1,8 @@
+prefix=/home/xhm/L_ego/devel
+
+Name: pose_utils
+Description: Description of pose_utils
+Version: 0.1.0
+Cflags: -I/home/xhm/L_ego/src/other-lib/utils/pose_utils/include
+Libs: -L${prefix}/lib -lpose_utils
+Requires: 

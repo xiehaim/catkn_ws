@@ -1,0 +1,8 @@
+prefix=/home/xhm/L_ego/devel
+
+Name: traj_utils
+Description: Description of traj_utils
+Version: 0.0.0
+Cflags: -I/home/xhm/L_ego/devel/include -I/home/xhm/L_ego/src/ego-planner-minco/src/planner/traj_utils/include
+Libs: -L${prefix}/lib -ltraj_utils
+Requires: message_runtime

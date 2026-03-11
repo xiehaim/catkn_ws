@@ -1,0 +1,50 @@
+<launch>
+    <arg name="map_size_x_" value="100"/>
+    <arg name="map_size_y_" value="100"/>
+    <arg name="map_size_z_" value="100"/>
+    <arg name="cx" value="321.04638671875"/>
+    <arg name="cy" value="243.44969177246094"/>
+    <arg name="fx" value="387.229248046875"/>
+    <arg name="fy" value="387.229248046875"/>
+    <node name="path_searching" pkg="path_searching" type="path_searching_test" output="screen">
+        <param name="grid_map/resolution" value="0.1" />
+        <param name="grid_map/map_size_x" value="$(arg map_size_x_)" />
+        <param name="grid_map/map_size_y" value="$(arg map_size_y_)" />
+        <param name="grid_map/map_size_z" value="$(arg map_size_z_)" />
+        <param name="grid_map/local_update_range_x" value="5.5" />
+        <param name="grid_map/local_update_range_y" value="5.5" />
+        <param name="grid_map/local_update_range_z" value="2.0" /> <!-- different meaning between grid_map.cpp and grid_map_bigmap.cpp -->
+        <param name="grid_map/obstacles_inflation" value="0.1" />
+        <param name="grid_map/local_map_margin" value="10"/>
+        <param name="grid_map/enable_virtual_wall" value="true"/>
+        <param name="grid_map/virtual_ceil" value="3.0"/>
+        <param name="grid_map/virtual_ground" value="-0.1"/>
+        <param name="grid_map/ground_height" value="-0.01"/>
+        <!-- camera parameter -->
+        <param name="grid_map/cx" value="$(arg cx)"/>
+        <param name="grid_map/cy" value="$(arg cy)"/>
+        <param name="grid_map/fx" value="$(arg fx)"/>
+        <param name="grid_map/fy" value="$(arg fy)"/>
+        <!-- depth filter -->
+        <param name="grid_map/use_depth_filter" value="true"/>
+        <param name="grid_map/depth_filter_tolerance" value="0.15"/>
+        <param name="grid_map/depth_filter_maxdist" value="5.0"/>
+        <param name="grid_map/depth_filter_mindist" value="0.2"/>
+        <param name="grid_map/depth_filter_margin" value="2"/>
+        <param name="grid_map/k_depth_scaling_factor" value="1000.0"/>
+        <param name="grid_map/skip_pixel" value="2"/>
+        <!-- local fusion -->
+        <param name="grid_map/p_hit" value="0.65"/>
+        <param name="grid_map/p_miss" value="0.35"/>
+        <param name="grid_map/p_min" value="0.12"/>
+        <param name="grid_map/p_max" value="0.90"/>
+        <param name="grid_map/p_occ" value="0.80"/>
+        <param name="grid_map/fading_time" value="1000.0"/>
+        <param name="grid_map/min_ray_length" value="0.1"/>
+        <param name="grid_map/max_ray_length" value="4.5"/>
+        <param name="grid_map/visualization_truncate_height" value="1.9"/>
+        <param name="grid_map/show_occ_time" value="false"/>
+        <param name="grid_map/pose_type" value="1"/>
+        <param name="grid_map/frame_id" value="world"/>
+    </node>
+</launch>

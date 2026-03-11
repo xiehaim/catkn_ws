@@ -1376,9 +1376,15 @@ PolyTrajOptimizerCeres::finelyCheckAndSetConstraintPoints(
           bool occ = grid_map_->getInflateOccupancy(pt);
 
           if (occ != prev_occ) {
-            // free->occ 时取 prev_pt（贴近障碍表面且在自由侧）
-            // occ->free 时取 pt（刚离开占据区，贴近障碍表面）
-            base_candidate = prev_occ ? pt : prev_pt;
+            // free->occ 时通常取 prev_pt（贴近障碍表面且在自由侧），
+            // 但若跃迁发生在首个采样步，prev_pt 仍是约束点本身，
+            // 会导致后续方向向量归一化出现零向量；此时改取 pt。
+            // occ->free 时取 pt（刚离开占据区，贴近障碍表面）。
+            if (!prev_occ && (prev_pt - init_points.col(idx)).squaredNorm() < 1e-12) {
+              base_candidate = pt;
+            } else {
+              base_candidate = prev_occ ? pt : prev_pt;
+            }
             found_base = true;
             break;
           }
@@ -1402,8 +1408,12 @@ PolyTrajOptimizerCeres::finelyCheckAndSetConstraintPoints(
         if (!found_base)
           return false;
 
+        Eigen::Vector3d diff = init_points.col(idx) - base_candidate;
+        if (diff.squaredNorm() < 1e-12)
+          return false;
+
         base_pt = base_candidate;
-        dir = (init_points.col(idx) - base_pt).normalized(); // 从基点指向约束点
+        dir = diff.normalized(); // 从基点指向约束点
         return true;
       };
 

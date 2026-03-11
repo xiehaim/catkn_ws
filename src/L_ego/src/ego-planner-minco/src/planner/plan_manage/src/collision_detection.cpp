@@ -1361,22 +1361,44 @@ PolyTrajOptimizerCeres::finelyCheckAndSetConstraintPoints(
         if (length <= 1e-5)
           return false;
 
-        // 从约束点向交点方向搜索第一个占据点作为基点
+        // 沿约束点->交点方向搜索占据状态跃迁，用跃迁附近点作为“障碍物表面”基点
         Eigen::Vector3d search_dir =
             (intersection_pt - init_points.col(idx)).normalized();
         double step = grid_map_->getResolution();
         double max_search = length + 5 * step;
-        double d = step;
         bool found_base = false;
-        Eigen::Vector3d base_candidate;
-        for (; d <= max_search; d += step) {
+        Eigen::Vector3d base_candidate = init_points.col(idx);
+
+        bool prev_occ = grid_map_->getInflateOccupancy(init_points.col(idx));
+        Eigen::Vector3d prev_pt = init_points.col(idx);
+        for (double d = step; d <= max_search; d += step) {
           Eigen::Vector3d pt = init_points.col(idx) + d * search_dir;
-          if (grid_map_->getInflateOccupancy(pt)) {
-            base_candidate = pt;
+          bool occ = grid_map_->getInflateOccupancy(pt);
+
+          if (occ != prev_occ) {
+            // free->occ 时取 prev_pt（贴近障碍表面且在自由侧）
+            // occ->free 时取 pt（刚离开占据区，贴近障碍表面）
+            base_candidate = prev_occ ? pt : prev_pt;
             found_base = true;
             break;
           }
+
+          prev_occ = occ;
+          prev_pt = pt;
         }
+
+        // 兜底：若没有发生状态跃迁，但沿线曾有自由点（典型是起点在占据区），取首个自由点
+        if (!found_base && prev_occ) {
+          for (double d = step; d <= max_search; d += step) {
+            Eigen::Vector3d pt = init_points.col(idx) + d * search_dir;
+            if (!grid_map_->getInflateOccupancy(pt)) {
+              base_candidate = pt;
+              found_base = true;
+              break;
+            }
+          }
+        }
+
         if (!found_base)
           return false;
 
@@ -2308,4 +2330,3 @@ std::vector<ConstraintPoints> PolyTrajOptimizerCeres::distinctiveTrajs(
 }
 
 } // namespace ego_planner
-

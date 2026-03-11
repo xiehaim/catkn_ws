@@ -223,17 +223,18 @@ bool PolyTrajOptimizerCeres::optimizeTrajectory(
         this, iniState, finState, piece_num_);
     problem.AddResidualBlock(smoothness_cost, NULL, p_params, t_params);
   
-    // 2. 障碍物代价
-    for (int i = 0; i < cps_.cp_size; i++) {
+    // 2. 障碍物代价（与 ego_planner 一致：仅作用于前 2/3 约束点）
+    const int i_end_obs = ConstraintPoints::two_thirds_id(cps_.points, touch_goal_);
+    for (int i = 1; i <= i_end_obs && i < cps_.cp_size; i++) {
       if (!cps_.direction[i].empty()) {
         int seg_idx = cps_.segment_idx[i];
         double norm_t = cps_.normalized_t[i];
         ceres::CostFunction *obstacle_cost =
-        new ObstacleCostAnalytic(this, i, seg_idx, norm_t);
+            new ObstacleCostAnalytic(this, i, seg_idx, norm_t);
         problem.AddResidualBlock(obstacle_cost, NULL, p_params, t_params);
       }
     }
- 
+
 
         // 3. 距离平方方差代价
         ceres::CostFunction *variance_cost =

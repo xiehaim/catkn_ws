@@ -2,6 +2,8 @@
 #include "poly_traj_utils.hpp"
 #include <Eigen/Eigen>
 #include <ceres/ceres.h>
+#include <algorithm>
+#include <cmath>
 #include <memory>
 #include <path_searching/dyn_a_star.h>
 #include <plan_env/grid_map.h>
@@ -308,28 +310,37 @@ private:
     int seg_idx_;
     double norm_t_;
 
-    // 辅助函数：计算给定位置的障碍物代价
+    // 辅助函数：计算给定位置的障碍物目标值（非残差）
     double computeCost(const Eigen::Vector3d &pos) const {
       double cost = 0.0;
       const double d_safe = optimizer_->obs_clearance_;
       const double d_soft = optimizer_->obs_clearance_soft_;
       const double w_hard = optimizer_->wei_obs_;
       const double w_soft = optimizer_->wei_obs_soft_;
+      const double r = 0.05;
+      const double rsqr = r * r;
 
-      for (size_t j = 0; j < optimizer_->cps_.direction[point_idx_].size();
-           j++) {
+      for (size_t j = 0; j < optimizer_->cps_.direction[point_idx_].size(); ++j) {
         const auto &base = optimizer_->cps_.base_point[point_idx_][j];
         const auto &dir = optimizer_->cps_.direction[point_idx_][j];
-        double signed_dist = (pos - base).dot(dir);
-        double d_err = d_safe - signed_dist;
-        double d_err_soft = d_soft - signed_dist;
+        const double signed_dist = (pos - base).dot(dir);
+        const double d_err = d_safe - signed_dist;
+        const double d_err_soft = d_soft - signed_dist;
+
         if (d_err > 0.0) {
-          cost += sqrt(w_hard) * d_err * sqrt(d_err);
-        } else if (d_err_soft > 0.0) {
-          cost += sqrt(w_soft) * d_err_soft;
+          cost += w_hard * std::pow(d_err, 3.0);
+        }
+        if (d_err_soft > 0.0) {
+          const double term = std::sqrt(1.0 + d_err_soft * d_err_soft / rsqr);
+          cost += w_soft * rsqr * (term - 1.0);
         }
       }
       return cost;
+    }
+
+    double computeResidual(const Eigen::Vector3d &pos) const {
+      const double cost = computeCost(pos);
+      return std::sqrt(std::max(0.0, 2.0 * cost));
     }
 
   public:
@@ -371,36 +382,17 @@ private:
 
       // 4. 计算绝对时间
       double t_abs = 0.0;
-      for (int i = 0; i < seg_idx_; i++)
-      {
+      for (int i = 0; i < seg_idx_; i++) {
         t_abs += T[i];
-        std::cout << "i: " << i << " T[i]: " << T[i] << "t_abs:" << t_abs
-                  << std::endl;
       }
       t_abs += norm_t_ * T[seg_idx_];
- 
 
       // 5. 获取该点的位置
       Eigen::Vector3d pos = optimizer_->jerkOpt_.getTraj().getPos(t_abs);
 
-      std::cout << "\n[障碍物代价计算] 约束点索引=" << point_idx_
-                << " 段索引=" << seg_idx_ << " 时间=" << t_abs
-                << " 当前位置=" << pos.transpose() << std::endl;
-      for (size_t j = 0; j < optimizer_->cps_.direction[point_idx_].size();
-           j++) {
-        double signed_dist =
-            (pos - optimizer_->cps_.base_point[point_idx_][j])
-                .dot(optimizer_->cps_.direction[point_idx_][j]);
-        std::cout << "    基点="
-                  << optimizer_->cps_.base_point[point_idx_][j].transpose()
-                  << " 方向="
-                  << optimizer_->cps_.direction[point_idx_][j].transpose()
-                  << " 有符号距离=" << signed_dist << std::endl;
-      }
-
       // 6. 计算障碍物代价
-      double cost = computeCost(pos);
-      residuals[0] = cost;
+      const double cost = computeCost(pos);
+      residuals[0] = computeResidual(pos);
       optimizer_->total_obs_cost_ += cost;
 
       // 7. 数值微分雅可比
@@ -427,7 +419,7 @@ private:
                 t_abs_plus += norm_t_ * T[seg_idx_];
                 Eigen::Vector3d pos_plus =
                     optimizer_->jerkOpt_.getTraj().getPos(t_abs_plus);
-                double cost_plus = computeCost(pos_plus);
+                double residual_plus = computeResidual(pos_plus);
 
                 // 反向扰动
                 Eigen::MatrixXd P_minus = P;
@@ -439,9 +431,9 @@ private:
                 t_abs_minus += norm_t_ * T[seg_idx_];
                 Eigen::Vector3d pos_minus =
                     optimizer_->jerkOpt_.getTraj().getPos(t_abs_minus);
-                double cost_minus = computeCost(pos_minus);
+                double residual_minus = computeResidual(pos_minus);
 
-                Jp(0, idx) = (cost_plus - cost_minus) / (2 * eps);
+                Jp(0, idx) = (residual_plus - residual_minus) / (2 * eps);
               }
             }
             optimizer_->jerkOpt_.generate(P, T); // 恢复
@@ -467,7 +459,7 @@ private:
               t_abs_plus += norm_t_ * T_plus[seg_idx_];
               Eigen::Vector3d pos_plus =
                   optimizer_->jerkOpt_.getTraj().getPos(t_abs_plus);
-              double cost_plus = computeCost(pos_plus);
+              double residual_plus = computeResidual(pos_plus);
 
               // 反向扰动
               Eigen::VectorXd vt_minus = virtual_t;
@@ -481,9 +473,9 @@ private:
               t_abs_minus += norm_t_ * T_minus[seg_idx_];
               Eigen::Vector3d pos_minus =
                   optimizer_->jerkOpt_.getTraj().getPos(t_abs_minus);
-              double cost_minus = computeCost(pos_minus);
+              double residual_minus = computeResidual(pos_minus);
 
-              Jt(0, i) = (cost_plus - cost_minus) / (2 * eps);
+              Jt(0, i) = (residual_plus - residual_minus) / (2 * eps);
             }
             optimizer_->jerkOpt_.generate(P, T); // 恢复
           }

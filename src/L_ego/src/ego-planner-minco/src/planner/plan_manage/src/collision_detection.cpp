@@ -2,6 +2,8 @@
 #include "../include/optimizer/opt.hpp"
 
 #include <cmath>
+#include <limits>
+#include <algorithm>
 
 using namespace std;
 namespace ego_planner {
@@ -22,7 +24,7 @@ bool PolyTrajOptimizerCeres::computePointsToCheck(poly_traj::Trajectory &traj,
     return false;
   }
 
-  const double RES = grid_map_->getResolution(), RES_2 = RES / 2;
+  const double RES = grid_map_->getResolution();
   Eigen::VectorXd durations = traj.getDurations();
 
   // 输出轨迹基本信息
@@ -59,7 +61,6 @@ bool PolyTrajOptimizerCeres::computePointsToCheck(poly_traj::Trajectory &traj,
          "最小段时长 = %f, 每段约束点数 = %d)\n",
          t_step, RES, max_vel_, durations.minCoeff(), cps_num_prePiece_);
 
-  Eigen::Vector3d pt_last = traj.getPos(0.0);
   int id_cps_curr = 0, id_piece_curr = 0;
   double t = 0.0;
   int added_points_total = 0;
@@ -134,18 +135,13 @@ bool PolyTrajOptimizerCeres::computePointsToCheck(poly_traj::Trajectory &traj,
 
     Eigen::Vector3d pt = traj.getPos(t);
 
-    // 如果距离上次采样点足够远，则添加新采样点
-    bool add_point = (t < 1e-5) || (points_check[id_cps_curr].size() == 0) ||
-                     ((pt - pt_last).cwiseAbs().maxCoeff() > RES_2);
-    if (add_point) {
-      points_check[id_cps_curr].emplace_back(t, pt);
-      added_points_total++;
-      printf("[computePointsToCheck] 添加采样点：约束点 %d，时间 t = %f，"
-             "位置 = (%f, %f, %f)，当前该约束点采样点个数 = %d\n",
-             id_cps_curr, t, pt.x(), pt.y(), pt.z(),
-             (int)points_check[id_cps_curr].size());
-      pt_last = pt;
-    }
+    // 固定时间步长采样，保证采样更均匀
+    points_check[id_cps_curr].emplace_back(t, pt);
+    added_points_total++;
+    printf("[computePointsToCheck] 添加采样点：约束点 %d，时间 t = %f，"
+           "位置 = (%f, %f, %f)，当前该约束点采样点个数 = %d\n",
+           id_cps_curr, t, pt.x(), pt.y(), pt.z(),
+           (int)points_check[id_cps_curr].size());
 
     t += t_step;
   }
@@ -1121,6 +1117,17 @@ PolyTrajOptimizerCeres::finelyCheckAndSetConstraintPoints(
     return CHK_RET::ERR;
   }
 
+  // 记录每个约束点是否在占据区域（用于确保基点/方向与碰撞点一一对应）
+  std::vector<bool> cp_in_occ(i_end, false);
+  for (int i = 0; i < i_end; i++) {
+    for (size_t j = 0; j < points_check[i].size(); j++) {
+      if (grid_map_->getInflateOccupancy(points_check[i][j].second)) {
+        cp_in_occ[i] = true;
+        break;
+      }
+    }
+  }
+
   // 记录每个约束点的时间、段索引和归一化时间
   for (int i = 0; i < i_end; i++) {
     if (!points_check[i].empty()) {
@@ -1232,26 +1239,13 @@ PolyTrajOptimizerCeres::finelyCheckAndSetConstraintPoints(
     bounds[i] = std::pair<int, int>(id_low_bound, id_up_bound);
   }
 
-  /*** 4. 调整段长度，确保每段至少有总点数的10% ***/
-  std::vector<std::pair<int, int>> adjusted_segment_ids(segment_ids.size());
-  constexpr double MINIMUM_PERCENT = 0.1;
-  int minimum_points = round(init_points.cols() * MINIMUM_PERCENT);
-  for (size_t i = 0; i < segment_ids.size(); i++) {
-    int num_points = segment_ids[i].second - segment_ids[i].first + 1;
-    if (num_points < minimum_points) {
-      int add_points_each_side =
-          (int)(((minimum_points - num_points) + 1.0f) / 2);
-      adjusted_segment_ids[i].first =
-          segment_ids[i].first - add_points_each_side >= bounds[i].first
-              ? segment_ids[i].first - add_points_each_side
-              : bounds[i].first;
-      adjusted_segment_ids[i].second =
-          segment_ids[i].second + add_points_each_side <= bounds[i].second
-              ? segment_ids[i].second + add_points_each_side
-              : bounds[i].second;
-    } else {
-      adjusted_segment_ids[i].first = segment_ids[i].first;
-      adjusted_segment_ids[i].second = segment_ids[i].second;
+  /*** 4. 段范围保持原始碰撞区间，仅做边界裁剪，避免把无碰撞点强行纳入约束 ***/
+  std::vector<std::pair<int, int>> adjusted_segment_ids = segment_ids;
+  for (size_t i = 0; i < adjusted_segment_ids.size(); i++) {
+    adjusted_segment_ids[i].first = std::max(adjusted_segment_ids[i].first, bounds[i].first);
+    adjusted_segment_ids[i].second = std::min(adjusted_segment_ids[i].second, bounds[i].second);
+    if (adjusted_segment_ids[i].first > adjusted_segment_ids[i].second) {
+      adjusted_segment_ids[i] = segment_ids[i];
     }
   }
 
@@ -1280,6 +1274,8 @@ PolyTrajOptimizerCeres::finelyCheckAndSetConstraintPoints(
     // 遍历段内所有约束点（包括首尾），为每个点独立生成
     for (int j = adjusted_segment_ids[i].first;
          j <= adjusted_segment_ids[i].second; j++) {
+      if (j < 0 || j >= i_end || !cp_in_occ[j])
+        continue;
       // 跳过最边缘点？为了简单，我们尝试为所有点生成，但如果点太靠近边界可能无法获得切线。
       // 如果无法生成，就跳过，不影响其他点。
       // 生成基点和方向的局部函数（lambda），输入点索引
@@ -1338,6 +1334,23 @@ PolyTrajOptimizerCeres::finelyCheckAndSetConstraintPoints(
                     t;
             found_intersection = true;
             break;
+          }
+        }
+
+        if (!found_intersection) {
+          // 退化情况：取A*路径上离约束点最近的点作为交会参考，避免该点直接丢失约束
+          double best_d2 = std::numeric_limits<double>::infinity();
+          int best_id = -1;
+          for (int pi = 0; pi < (int)a_star_pathes[i].size(); ++pi) {
+            double d2 = (a_star_pathes[i][pi] - init_points.col(idx)).squaredNorm();
+            if (d2 < best_d2) {
+              best_d2 = d2;
+              best_id = pi;
+            }
+          }
+          if (best_id >= 0) {
+            intersection_pt = a_star_pathes[i][best_id];
+            found_intersection = true;
           }
         }
 

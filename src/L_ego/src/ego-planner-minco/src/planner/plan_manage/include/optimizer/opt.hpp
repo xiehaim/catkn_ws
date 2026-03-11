@@ -143,6 +143,7 @@ private:
   double wei_time_;
   double obs_clearance_, obs_clearance_soft_, swarm_clearance_;
   double max_vel_, max_acc_, max_jer_;
+  double max_inner_point_dev_;
   double t_now_;
   std::vector<std::vector<Eigen::Vector3d>> last_a_star_pathes_;
 
@@ -235,7 +236,7 @@ private:
       int piece_num = optimizer->piece_num_;
       int inner_pts_num = piece_num - 1;
 
-      Eigen::MatrixXd P(3, piece_num + 1);
+      Eigen::MatrixXd P(3, inner_pts_num);
 
       for (int i = 0; i < inner_pts_num; i++) {
         P(0, i) = p_params[3 * i];
@@ -352,7 +353,7 @@ private:
     
 
       // 1. 重建控制点矩阵 P (3 x piece_num+1)
-      Eigen::MatrixXd P(3, piece_num + 1);
+      Eigen::MatrixXd P(3, inner_pts_num);
 
       for (int i = 0; i < inner_pts_num; i++) {
         P(0, i) = p_params[3 * i];
@@ -418,7 +419,7 @@ private:
                 int idx = 3 * i + k;
                 // 正向扰动
                 Eigen::MatrixXd P_plus = P;
-                P_plus(k, i + 1) += eps;
+                P_plus(k, i) += eps;
                 optimizer_->jerkOpt_.generate(P_plus, T);
                 double t_abs_plus = 0.0;
                 for (int s = 0; s < seg_idx_; s++)
@@ -430,7 +431,7 @@ private:
 
                 // 反向扰动
                 Eigen::MatrixXd P_minus = P;
-                P_minus(k, i + 1) -= eps;
+                P_minus(k, i) -= eps;
                 optimizer_->jerkOpt_.generate(P_minus, T);
                 double t_abs_minus = 0.0;
                 for (int s = 0; s < seg_idx_; s++)
@@ -691,7 +692,7 @@ private:
 
       // 1. 重建控制点矩阵 P (3 x (piece_num+1))
       int inner_pts_num = piece_num - 1;
-      Eigen::MatrixXd P(3, piece_num + 1);
+      Eigen::MatrixXd P(3, inner_pts_num);
       const auto &iniState = optimizer_->jerkOpt_.get_iniState();
       const auto &finState = optimizer_->jerkOpt_.get_finState();
       // P.col(0) = iniState.col(0);
@@ -750,7 +751,7 @@ private:
                 int idx = 3 * i + j;
                 // 正向扰动
                 Eigen::MatrixXd P_plus = P;
-                P_plus(j, i + 1) += eps;
+                P_plus(j, i) += eps;
                 optimizer_->jerkOpt_.generate(P_plus, T);
                 Eigen::Vector3d acc_plus =
                     optimizer_->jerkOpt_.getTraj().getAcc(t_abs);
@@ -760,7 +761,7 @@ private:
 
                 // 反向扰动
                 Eigen::MatrixXd P_minus = P;
-                P_minus(j, i + 1) -= eps;
+                P_minus(j, i) -= eps;
                 optimizer_->jerkOpt_.generate(P_minus, T);
                 Eigen::Vector3d acc_minus =
                     optimizer_->jerkOpt_.getTraj().getAcc(t_abs);
@@ -864,111 +865,122 @@ private:
         return true;
       }
 
-      // 1. 计算当前段的时间
-      double virtual_t = t_params[seg_idx_];
-      double duration;
-      double duration_jacobian;
-
-      if (virtual_t > 0.0) {
-        duration = (0.5 * virtual_t + 1.0) * virtual_t + 1.0;
-        duration_jacobian = virtual_t + 1.0;
-      } else {
-        double den = (0.5 * virtual_t - 1.0) * virtual_t + 1.0;
-        duration = 1.0 / den;
-        duration_jacobian = (1.0 - virtual_t) / (den * den);
-      }
-
-      if (duration < 0.01)
-        duration = 0.01;
-
-      // 2. 重建控制点
+      // 1. 重建控制点矩阵 (仅内部点)
       int inner_pts_num = piece_num - 1;
-      Eigen::MatrixXd P(3, piece_num + 1);
-
-      const auto &iniState = optimizer_->jerkOpt_.get_iniState();
-      const auto &finState = optimizer_->jerkOpt_.get_finState();
-
-      // P.col(0) = iniState.col(0);
-
+      Eigen::MatrixXd P(3, inner_pts_num);
       for (int i = 0; i < inner_pts_num; i++) {
-        P(0, i ) = p_params[3 * i];
-        P(1, i ) = p_params[3 * i + 1];
-        P(2, i ) = p_params[3 * i + 2];
+        P(0, i) = p_params[3 * i];
+        P(1, i) = p_params[3 * i + 1];
+        P(2, i) = p_params[3 * i + 2];
       }
 
-      // P.col(piece_num) = finState.col(0);
+      // 2. 虚拟时间 -> 实际时间，并计算采样绝对时间
+      Eigen::Map<const Eigen::VectorXd> virtual_t(t_params, piece_num);
+      Eigen::VectorXd T(piece_num);
+      optimizer_->VirtualT2RealT(virtual_t, T);
 
-      // 3. 估计速度（使用线性插值）
-      Eigen::Vector3d vel;
-      if (seg_idx_ == 0) {
-        vel = (P.col(1) - P.col(0)) / duration;
-      } else if (seg_idx_ == piece_num - 1) {
-        vel = (P.col(piece_num) - P.col(piece_num - 1)) / duration;
+      std::vector<double> cum_t(piece_num + 1, 0.0);
+      for (int i = 0; i < piece_num; i++) {
+        cum_t[i + 1] = cum_t[i] + T[i];
+      }
+      double t_abs = cum_t[seg_idx_] + t_norm_ * T[seg_idx_];
+
+      // 3. 基于真实轨迹计算速度约束（与加速度/jerk约束一致）
+      optimizer_->jerkOpt_.generate(P, T);
+      Eigen::Vector3d vel = optimizer_->jerkOpt_.getTraj().getVel(t_abs);
+      double vel_norm = vel.norm();
+      double w = optimizer_->wei_vel_feas_;
+      double max_vel = optimizer_->max_vel_;
+
+      if (vel_norm > max_vel) {
+        residuals[0] = sqrt(w) * (vel_norm - max_vel);
       } else {
-        vel = (P.col(seg_idx_ + 1) - P.col(seg_idx_)) / duration;
+        residuals[0] = 0.0;
       }
-
-      // 4. 计算速度残差
-      double v_sqr = vel.squaredNorm();
-      double v_max_sqr = optimizer_->max_vel_ * optimizer_->max_vel_;
-      double w = optimizer_->wei_vel_feas_; // 使用独立的速度权重
-
-      double residual = 0.0;
-      if (v_sqr > v_max_sqr) {
-        double v = sqrt(v_sqr);
-        residual = sqrt(w) * (v - optimizer_->max_vel_);
-      }
-
-      residuals[0] = residual;
       optimizer_->total_vel_cost_ += residuals[0];
 
-      // 5. 计算雅可比矩阵
+      // 4. 数值微分雅可比
       if (jacobians != nullptr) {
-        // 5.1 控制点雅可比
+        const double eps = 1e-6;
+        const double r0 = residuals[0];
+
         if (jacobians[0] != nullptr) {
-          Eigen::Map<Eigen::Matrix<double, 1, Eigen::Dynamic>> jacobian_p(
+          Eigen::Map<Eigen::Matrix<double, 1, Eigen::Dynamic>> Jp(
               jacobians[0], 1, 3 * inner_pts_num);
-          jacobian_p.setZero();
+          Jp.setZero();
 
-          if (residual > 0.0) {
-            double sqrt_weight = sqrt(w);
-            double v = sqrt(v_sqr);
+          if (r0 > 0.0) {
+            for (int i = 0; i < inner_pts_num; i++) {
+              for (int j = 0; j < 3; j++) {
+                int idx = 3 * i + j;
 
-            Eigen::Vector3d dres_dvel = sqrt_weight * (vel / v);
+                Eigen::MatrixXd P_plus = P;
+                P_plus(j, i) += eps;
+                optimizer_->jerkOpt_.generate(P_plus, T);
+                Eigen::Vector3d vel_plus =
+                    optimizer_->jerkOpt_.getTraj().getVel(t_abs);
+                double r_plus = (vel_plus.norm() > max_vel)
+                                    ? sqrt(w) * (vel_plus.norm() - max_vel)
+                                    : 0.0;
 
-            if (seg_idx_ == 0) {
-              for (int i = 0; i < 3; i++) {
-                if (inner_pts_num > 0) {
-                  jacobian_p(0, i) = dres_dvel(i) / duration;
-                }
-              }
-            } else if (seg_idx_ == piece_num - 1) {
-              int idx = seg_idx_ - 1;
-              for (int i = 0; i < 3; i++) {
-                jacobian_p(0, 3 * idx + i) = -dres_dvel(i) / duration;
-              }
-            } else {
-              int idx = seg_idx_ - 1;
-              for (int i = 0; i < 3; i++) {
-                jacobian_p(0, 3 * idx + i) = -dres_dvel(i) / duration;
-                jacobian_p(0, 3 * (idx + 1) + i) = dres_dvel(i) / duration;
+                Eigen::MatrixXd P_minus = P;
+                P_minus(j, i) -= eps;
+                optimizer_->jerkOpt_.generate(P_minus, T);
+                Eigen::Vector3d vel_minus =
+                    optimizer_->jerkOpt_.getTraj().getVel(t_abs);
+                double r_minus = (vel_minus.norm() > max_vel)
+                                     ? sqrt(w) * (vel_minus.norm() - max_vel)
+                                     : 0.0;
+
+                Jp(0, idx) = (r_plus - r_minus) / (2 * eps);
               }
             }
+            optimizer_->jerkOpt_.generate(P, T);
           }
         }
 
-        // 5.2 时间雅可比
         if (jacobians[1] != nullptr) {
-          Eigen::Map<Eigen::Matrix<double, 1, Eigen::Dynamic>> jacobian_t(
-              jacobians[1], 1, piece_num);
-          jacobian_t.setZero();
+          Eigen::Map<Eigen::Matrix<double, 1, Eigen::Dynamic>> Jt(jacobians[1],
+                                                                  1, piece_num);
+          Jt.setZero();
 
-          if (residual > 0.0 && seg_idx_ < piece_num) {
-            double sqrt_weight = sqrt(w);
-            double v = sqrt(v_sqr);
-            double dv_dT = -v / duration;
-            double dres_dT = sqrt_weight * dv_dT;
-            jacobian_t(0, seg_idx_) = dres_dT * duration_jacobian;
+          if (r0 > 0.0) {
+            for (int i = 0; i < piece_num; i++) {
+              Eigen::VectorXd vt_plus = virtual_t;
+              vt_plus(i) += eps;
+              Eigen::VectorXd T_plus(piece_num);
+              optimizer_->VirtualT2RealT(vt_plus, T_plus);
+              std::vector<double> cum_t_plus(piece_num + 1, 0.0);
+              for (int k = 0; k < piece_num; k++)
+                cum_t_plus[k + 1] = cum_t_plus[k] + T_plus[k];
+              double t_abs_plus =
+                  cum_t_plus[seg_idx_] + t_norm_ * T_plus[seg_idx_];
+              optimizer_->jerkOpt_.generate(P, T_plus);
+              Eigen::Vector3d vel_plus =
+                  optimizer_->jerkOpt_.getTraj().getVel(t_abs_plus);
+              double r_plus = (vel_plus.norm() > max_vel)
+                                  ? sqrt(w) * (vel_plus.norm() - max_vel)
+                                  : 0.0;
+
+              Eigen::VectorXd vt_minus = virtual_t;
+              vt_minus(i) -= eps;
+              Eigen::VectorXd T_minus(piece_num);
+              optimizer_->VirtualT2RealT(vt_minus, T_minus);
+              std::vector<double> cum_t_minus(piece_num + 1, 0.0);
+              for (int k = 0; k < piece_num; k++)
+                cum_t_minus[k + 1] = cum_t_minus[k] + T_minus[k];
+              double t_abs_minus =
+                  cum_t_minus[seg_idx_] + t_norm_ * T_minus[seg_idx_];
+              optimizer_->jerkOpt_.generate(P, T_minus);
+              Eigen::Vector3d vel_minus =
+                  optimizer_->jerkOpt_.getTraj().getVel(t_abs_minus);
+              double r_minus = (vel_minus.norm() > max_vel)
+                                   ? sqrt(w) * (vel_minus.norm() - max_vel)
+                                   : 0.0;
+
+              Jt(0, i) = (r_plus - r_minus) / (2 * eps);
+            }
+            optimizer_->jerkOpt_.generate(P, T);
           }
         }
       }
@@ -1012,7 +1024,7 @@ private:
 
       // 1. 重建控制点矩阵
       int inner_pts_num = piece_num - 1;
-      Eigen::MatrixXd P(3, piece_num + 1);
+      Eigen::MatrixXd P(3, inner_pts_num);
       const auto &iniState = optimizer_->jerkOpt_.get_iniState();
       const auto &finState = optimizer_->jerkOpt_.get_finState();
       // P.col(0) = iniState.col(0);
@@ -1069,7 +1081,7 @@ private:
                 int idx = 3 * i + j;
                 // 正向
                 Eigen::MatrixXd P_plus = P;
-                P_plus(j, i + 1) += eps;
+                P_plus(j, i) += eps;
                 optimizer_->jerkOpt_.generate(P_plus, T);
                 Eigen::Vector3d jerk_plus =
                     optimizer_->jerkOpt_.getTraj().getJer(t_abs);
@@ -1079,7 +1091,7 @@ private:
 
                 // 反向
                 Eigen::MatrixXd P_minus = P;
-                P_minus(j, i + 1) -= eps;
+                P_minus(j, i) -= eps;
                 optimizer_->jerkOpt_.generate(P_minus, T);
                 Eigen::Vector3d jerk_minus =
                     optimizer_->jerkOpt_.getTraj().getJer(t_abs);

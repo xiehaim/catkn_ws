@@ -210,6 +210,12 @@ bool PolyTrajOptimizerCeres::optimizeTrajectory(
     std::vector<std::pair<int, int>> segments_nouse;
     CHK_RET check_result =
         finelyCheckAndSetConstraintPoints(segments_nouse, jerkOpt_, false);
+    if (check_result == CHK_RET::ERR) {
+      ROS_ERROR("Failed to set constraint points before Ceres optimization.");
+      delete[] p_params;
+      delete[] t_params;
+      return false;
+    }
     // }
 
     // ============ 创建Ceres问题 ============
@@ -261,16 +267,12 @@ bool PolyTrajOptimizerCeres::optimizeTrajectory(
         ceres::CostFunction *time_cost = new TimeCostAnalytic(this);
         problem.AddResidualBlock(time_cost, NULL, t_params);
 
-        // 参数边界
-        for (int i = 0; i < 3; i++) {
-          problem.SetParameterLowerBound(p_params, i, p_params[i] - 0.5);
-          problem.SetParameterUpperBound(p_params, i, p_params[i] + 0.5);
-        }
-        if (touch_goal_) {
-          for (int i = total_p_params - 3; i < total_p_params; i++) {
-            problem.SetParameterLowerBound(p_params, i, p_params[i] - 0.5);
-            problem.SetParameterUpperBound(p_params, i, p_params[i] + 0.5);
-          }
+        // 参数边界：限制所有内部点漂移，防止轨迹发散“飞走”
+        for (int i = 0; i < total_p_params; i++) {
+          problem.SetParameterLowerBound(
+              p_params, i, initInnerPts.data()[i] - max_inner_point_dev_);
+          problem.SetParameterUpperBound(
+              p_params, i, initInnerPts.data()[i] + max_inner_point_dev_);
         }
         for (int i = 0; i < total_t_params; i++) {
           problem.SetParameterLowerBound(t_params, i, -10.0);
@@ -352,6 +354,9 @@ bool PolyTrajOptimizerCeres::optimizeTrajectory(
               segments_nouse, jerkOpt_, false);
           if (check_result == CHK_RET::OBS_FREE) {
             flag_success = true;
+          } else if (check_result == CHK_RET::ERR) {
+            ROS_ERROR("Constraint point check failed after optimization.");
+            flag_force_return = true;
           } else {
             flag_still_unsafe = true;
             restart_nums++;
@@ -362,13 +367,17 @@ bool PolyTrajOptimizerCeres::optimizeTrajectory(
           restart_nums++;
         }
 
+        if (flag_force_return) {
+          break;
+        }
+
         if (!flag_success && restart_nums < 3) {
           std::cout << "碰撞障碍物:" << flag_still_unsafe << std::endl;
           std::cout << "Preparing for restart " << restart_nums + 1
                     << " of max 3..." << std::endl;
         }
       }
-      while (flag_still_unsafe && restart_nums < 3)
+      while (flag_still_unsafe && restart_nums < 3 && !flag_force_return)
         ;
 
       delete[] p_params;
@@ -397,6 +406,8 @@ void PolyTrajOptimizerCeres::setParam(ros::NodeHandle &nh) {
   nh.param("optimization/max_vel", max_vel_, -1.0);
   nh.param("optimization/max_acc", max_acc_, -1.0);
   nh.param("optimization/max_jer", max_jer_, -1.0);
+  nh.param("optimization/max_inner_point_deviation", max_inner_point_dev_,
+           1.5);
 
   wei_swarm_mod_ = wei_swarm_;
 }

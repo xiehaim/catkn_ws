@@ -22,7 +22,7 @@ bool PolyTrajOptimizerCeres::computePointsToCheck(poly_traj::Trajectory &traj,
     return false;
   }
 
-  const double RES = grid_map_->getResolution(), RES_2 = RES / 2;
+  const double RES = grid_map_->getResolution();
   Eigen::VectorXd durations = traj.getDurations();
 
   // 输出轨迹基本信息
@@ -59,7 +59,6 @@ bool PolyTrajOptimizerCeres::computePointsToCheck(poly_traj::Trajectory &traj,
          "最小段时长 = %f, 每段约束点数 = %d)\n",
          t_step, RES, max_vel_, durations.minCoeff(), cps_num_prePiece_);
 
-  Eigen::Vector3d pt_last = traj.getPos(0.0);
   int id_cps_curr = 0, id_piece_curr = 0;
   double t = 0.0;
   int added_points_total = 0;
@@ -134,18 +133,13 @@ bool PolyTrajOptimizerCeres::computePointsToCheck(poly_traj::Trajectory &traj,
 
     Eigen::Vector3d pt = traj.getPos(t);
 
-    // 如果距离上次采样点足够远，则添加新采样点
-    bool add_point = (t < 1e-5) || (points_check[id_cps_curr].size() == 0) ||
-                     ((pt - pt_last).cwiseAbs().maxCoeff() > RES_2);
-    if (add_point) {
-      points_check[id_cps_curr].emplace_back(t, pt);
-      added_points_total++;
-      printf("[computePointsToCheck] 添加采样点：约束点 %d，时间 t = %f，"
-             "位置 = (%f, %f, %f)，当前该约束点采样点个数 = %d\n",
-             id_cps_curr, t, pt.x(), pt.y(), pt.z(),
-             (int)points_check[id_cps_curr].size());
-      pt_last = pt;
-    }
+    // 固定时间步长采样，保证采样更均匀
+    points_check[id_cps_curr].emplace_back(t, pt);
+    added_points_total++;
+    printf("[computePointsToCheck] 添加采样点：约束点 %d，时间 t = %f，"
+           "位置 = (%f, %f, %f)，当前该约束点采样点个数 = %d\n",
+           id_cps_curr, t, pt.x(), pt.y(), pt.z(),
+           (int)points_check[id_cps_curr].size());
 
     t += t_step;
   }

@@ -1,10 +1,18 @@
 
 #include "optimizer/opt.hpp"
+#include <algorithm>
+#include <cmath>
 #include <iostream>
 namespace ego_planner {
 void PolyTrajOptimizerCeres::visualizeDirections() {
   visualization_msgs::MarkerArray marker_array;
   int id = 0;
+
+  visualization_msgs::Marker clear_all;
+  clear_all.header.frame_id = "world";
+  clear_all.header.stamp = ros::Time::now();
+  clear_all.action = visualization_msgs::Marker::DELETEALL;
+  marker_array.markers.push_back(clear_all);
 
   // 确保轨迹已生成
   if (jerkOpt_.getTraj().getPieceNum() == 0) {
@@ -23,25 +31,16 @@ void PolyTrajOptimizerCeres::visualizeDirections() {
       const Eigen::Vector3d &base = cps_.base_point[i][j]; // 基点（障碍物表面）
       const Eigen::Vector3d &dir =
           cps_.direction[i][j]; // 方向（从基点指向控制点，安全方向）
-      int seg_idx = cps_.segment_idx[i];    // 所属段索引
-      double norm_t = cps_.normalized_t[i]; // 段内归一化时间
-
-      // 计算绝对时间 t_abs
-      double t_abs = 0.0;
-      for (int k = 0; k < seg_idx; k++)
-      {
-        t_abs += durations(k);
-        std::cout << "k: " << k << " Tdurations(k): " << durations(k)
-                  << "t_abs:" << t_abs << std::endl;
+      double t_abs = cps_.times[i];
+      if (std::isnan(t_abs) || std::isinf(t_abs)) {
+        continue;
       }
-      t_abs += norm_t * durations(seg_idx);
-      std::cout << "Visualizing constraint point " << i << ", direction " << j
-                << ": base=" << base.transpose() << ", dir=" << dir.transpose()
-                << ", t_abs=" << t_abs << std::endl;
+
+      double total_t = durations.sum();
+      t_abs = std::max(0.0, std::min(t_abs, total_t));
       // 获取轨迹点 pos
       Eigen::Vector3d pos = traj.getPos(t_abs);
 
-      //时间计算有问题  
       // ----- 1. 基点（黄色球体）-----
       visualization_msgs::Marker sphere;
       sphere.header.frame_id = "world";
@@ -121,8 +120,6 @@ void PolyTrajOptimizerCeres::visualizeDirections() {
       traj_point_marker.pose.position.x = pos.x();
       traj_point_marker.pose.position.y = pos.y();
       traj_point_marker.pose.position.z = pos.z();
-      std::cout<< "Visualizing constrained point at: (" << pos.x() << ", " << pos.y()
-                << ", " << pos.z() << std::endl;
       traj_point_marker.pose.orientation.w = 1.0;
       traj_point_marker.scale.x = 0.05; // 可根据需要调整大小
       traj_point_marker.scale.y = 0.05;
@@ -343,8 +340,6 @@ bool PolyTrajOptimizerCeres::optimizeTrajectory(
         cps_.points = jerkOpt_.getInitConstraintPoints(cps_num_prePiece_);
 
         bool ceres_success = summary.IsSolutionUsable();
-        visualizeDirections();
-        ros::Duration(1.0).sleep();
         if (ceres_success) {
           std::cout << "=== Optimization Summary ===" << std::endl;
           std::cout << summary.BriefReport() << std::endl;
@@ -362,9 +357,12 @@ bool PolyTrajOptimizerCeres::optimizeTrajectory(
             restart_nums++;
           }
 
+          visualizeDirections();
+
         } else {
           flag_still_unsafe = true;
           restart_nums++;
+          visualizeDirections();
         }
 
         if (flag_force_return) {

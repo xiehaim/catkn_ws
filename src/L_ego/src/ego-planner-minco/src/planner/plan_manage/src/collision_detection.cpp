@@ -1117,15 +1117,12 @@ PolyTrajOptimizerCeres::finelyCheckAndSetConstraintPoints(
     return CHK_RET::ERR;
   }
 
-  // 记录每个约束点是否在占据区域（用于确保基点/方向与碰撞点一一对应）
+  // 记录每个约束点“自身”是否在占据区域：
+  // 仅当约束点本体在障碍物内时，才给它设置对应的基点/方向。
+  // 这里不能使用 points_check 的邻域采样结果，否则会把未入障点也当作碰撞点。
   std::vector<bool> cp_in_occ(i_end, false);
   for (int i = 0; i < i_end; i++) {
-    for (size_t j = 0; j < points_check[i].size(); j++) {
-      if (grid_map_->getInflateOccupancy(points_check[i][j].second)) {
-        cp_in_occ[i] = true;
-        break;
-      }
-    }
+    cp_in_occ[i] = grid_map_->getInflateOccupancy(init_points.col(i));
   }
 
   // 记录每个约束点的时间、段索引和归一化时间
@@ -1361,27 +1358,59 @@ PolyTrajOptimizerCeres::finelyCheckAndSetConstraintPoints(
         if (length <= 1e-5)
           return false;
 
-        // 从约束点向交点方向搜索第一个占据点作为基点
+        // 沿约束点->交点方向搜索占据状态跃迁，用跃迁附近点作为“障碍物表面”基点
         Eigen::Vector3d search_dir =
             (intersection_pt - init_points.col(idx)).normalized();
         double step = grid_map_->getResolution();
         double max_search = length + 5 * step;
-        double d = step;
         bool found_base = false;
-        Eigen::Vector3d base_candidate;
-        for (; d <= max_search; d += step) {
+        Eigen::Vector3d base_candidate = init_points.col(idx);
+
+        bool prev_occ = grid_map_->getInflateOccupancy(init_points.col(idx));
+        Eigen::Vector3d prev_pt = init_points.col(idx);
+        for (double d = step; d <= max_search; d += step) {
           Eigen::Vector3d pt = init_points.col(idx) + d * search_dir;
-          if (grid_map_->getInflateOccupancy(pt)) {
-            base_candidate = pt;
+          bool occ = grid_map_->getInflateOccupancy(pt);
+
+          if (occ != prev_occ) {
+            // free->occ 时通常取 prev_pt（贴近障碍表面且在自由侧），
+            // 但若跃迁发生在首个采样步，prev_pt 仍是约束点本身，
+            // 会导致后续方向向量归一化出现零向量；此时改取 pt。
+            // occ->free 时取 pt（刚离开占据区，贴近障碍表面）。
+            if (!prev_occ && (prev_pt - init_points.col(idx)).squaredNorm() < 1e-12) {
+              base_candidate = pt;
+            } else {
+              base_candidate = prev_occ ? pt : prev_pt;
+            }
             found_base = true;
             break;
           }
+
+          prev_occ = occ;
+          prev_pt = pt;
         }
+
+        // 兜底：若没有发生状态跃迁，但沿线曾有自由点（典型是起点在占据区），取首个自由点
+        if (!found_base && prev_occ) {
+          for (double d = step; d <= max_search; d += step) {
+            Eigen::Vector3d pt = init_points.col(idx) + d * search_dir;
+            if (!grid_map_->getInflateOccupancy(pt)) {
+              base_candidate = pt;
+              found_base = true;
+              break;
+            }
+          }
+        }
+
         if (!found_base)
           return false;
 
+        Eigen::Vector3d diff = init_points.col(idx) - base_candidate;
+        if (diff.squaredNorm() < 1e-12)
+          return false;
+
         base_pt = base_candidate;
-        dir = (init_points.col(idx) - base_pt).normalized(); // 从基点指向约束点
+        dir = diff.normalized(); // 从基点指向约束点
         return true;
       };
 
@@ -2308,4 +2337,3 @@ std::vector<ConstraintPoints> PolyTrajOptimizerCeres::distinctiveTrajs(
 }
 
 } // namespace ego_planner
-

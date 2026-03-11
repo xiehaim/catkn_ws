@@ -1117,15 +1117,12 @@ PolyTrajOptimizerCeres::finelyCheckAndSetConstraintPoints(
     return CHK_RET::ERR;
   }
 
-  // 记录每个约束点是否在占据区域（用于确保基点/方向与碰撞点一一对应）
+  // 记录每个约束点“自身”是否在占据区域：
+  // 仅当约束点本体在障碍物内时，才给它设置对应的基点/方向。
+  // 这里不能使用 points_check 的邻域采样结果，否则会把未入障点也当作碰撞点。
   std::vector<bool> cp_in_occ(i_end, false);
   for (int i = 0; i < i_end; i++) {
-    for (size_t j = 0; j < points_check[i].size(); j++) {
-      if (grid_map_->getInflateOccupancy(points_check[i][j].second)) {
-        cp_in_occ[i] = true;
-        break;
-      }
-    }
+    cp_in_occ[i] = grid_map_->getInflateOccupancy(init_points.col(i));
   }
 
   // 记录每个约束点的时间、段索引和归一化时间
